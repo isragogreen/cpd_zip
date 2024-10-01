@@ -7,16 +7,18 @@ usage() {
 }
 
 # Проверка наличия пакетов без установки
+
+
+# Проверка наличия необходимых утилит
 check_packages() {
   local missing_packages=()
 
   for pkg in "$@"; do
-    if ! dpkg -l | grep -qw "$pkg"; then
+    if ! command -v "$pkg" > /dev/null 2>&1; then
       missing_packages+=("$pkg")
     fi
   done
 
-  # Если отсутствуют какие-то пакеты, выводим сообщение
   if [ ${#missing_packages[@]} -ne 0 ]; then
     echo "The following packages are missing: ${missing_packages[@]}. Install them? (y/n)"
     read -r answer
@@ -29,10 +31,10 @@ check_packages() {
   fi
 }
 
-# Проверка, что выбрано устройство, а не раздел
+# Измененная проверка на устройство
 check_device() {
   local device="$1"
-  if [[ "$device" =~ [0-9]+$ ]]; then
+  if [[ "$device" =~ p[0-9]+$ ]]; then
     echo "Error: $device is a partition, not a whole device. Specify the whole device (e.g., /dev/mmcblk0)."
     exit 1
   fi
@@ -100,7 +102,6 @@ split_size="2G"
 compression_level="9"
 buffer_size="auto"  # Значение по умолчанию для буфера - автоматический выбор
 
-# Определение количества доступных ядер и использование 80% от общего количества
 cpu_count=$(nproc)
 thread_count=$(( cpu_count * 80 / 100 ))
 if [ "$thread_count" -lt 1 ]; then
@@ -120,22 +121,20 @@ while getopts "i:o:b:s:c:u:" opt; do
     ;;
     c) compression_level="$OPTARG"
     ;;
-    u) restore_device="$OPTARG"  # Новый параметр для устройства восстановления
+    u) restore_device="$OPTARG"
     ;;
     *) usage
     ;;
   esac
 done
 
-# Проверка, что заданы обязательные параметры
 if [ -z "$output_directory" ]; then
   usage
 fi
 
-# Если задано устройство восстановления
 if [ ! -z "$restore_device" ]; then
   check_device "$restore_device"
-  check_device_empty "$restore_device"  # Проверка, не пустое ли устройство
+  check_device_empty "$restore_device"
 
   echo "Requesting sudo password..."
   sudo -v
@@ -154,19 +153,15 @@ if [ ! -z "$restore_device" ]; then
   exit 0
 fi
 
-# Проверка, что мы копируем с устройства, а не с раздела
 check_device "$input_device"
 
-# Проверка существования выходной директории
 if [ ! -d "$output_directory" ]; then
   echo "Error: output directory $output_directory does not exist."
   exit 1
 fi
 
-# Проверка необходимых пакетов
 check_packages pv parallel pigz blockdev parted
 
-# Проверка монтирования устройства
 check_mount "$output_directory"
 
 echo "Requesting sudo password..."
@@ -174,17 +169,14 @@ sudo -v
 
 echo "Using $cpu_count cores, $thread_count threads for compression."
 
-# Определение исходного размера данных
 dd_size=$(sudo blockdev --getsize64 "$input_device" | awk '{ printf "%.2fGB\n", $1/1024/1024/1024 }')
 echo "Original data size: $dd_size"
 
-# Основная команда копирования и сжатия
 if [ "$buffer_size" == "auto" ]; then
   sudo dd if="$input_device" bs=16M | pv | pigz -$compression_level -p $thread_count | split -b "$split_size" - "$output_directory/mmcblk0_backup.gz.part"
 else
   sudo dd if="$input_device" bs=16M | pv | parallel --pipe --block "$buffer_size" -j $thread_count "pigz -$compression_level" | split -b "$split_size" - "$output_directory/mmcblk0_backup.gz.part"
 fi
 
-# Определение и вывод сжатого размера данных
 compressed_size=$(du -sh "$output_directory/mmcblk0_backup.gz.part"* | cut -f1)
 echo "Compressed data size: $compressed_size"
